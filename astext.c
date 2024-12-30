@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@
 #define ASTEXT_TAB_STOP 8
 
 enum editorKey {
+  BACKSPACE = 127,
   ARROW_UP = 1000,
   ARROW_DOWN,
   ARROW_LEFT,
@@ -56,6 +58,9 @@ struct editorConfig {
 };
 
 struct editorConfig E;
+
+/*** prototypes ***/
+void editorSetStatusMessage(const char *fmt, ...);
 
 /*** terminal ***/
 
@@ -232,7 +237,44 @@ void editorAppendRow(char *s, size_t len) {
   E.numrows++;
 }
 
+void editorRowInsertChar(erow *row, int at, int c) {
+  if (at < 0 || at > row->size)
+    at = row->size;
+  row->chars = realloc(row->chars, row->size + 2);
+  memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+  row->size++;
+  row->chars[at] = c;
+  editorUpdateRow(row);
+}
+
+/*** editor operations ***/
+void editorInsertChar(int c) {
+  if (E.cy == E.numrows)
+    editorAppendRow(" ", 0);
+  editorRowInsertChar(&E.row[E.cy], E.cx, c);
+  E.cx++;
+}
+
 /*** file i/o ***/
+
+char *editorRowsToString(int *buflen) {
+  int totlen = 0;
+  for (int j = 0; j < E.numrows; j++)
+    totlen += E.row[j].size + 1;
+
+  *buflen = totlen;
+
+  char *buf = malloc(totlen);
+  char *p = buf;
+  for (int j = 0; j < E.numrows; ++j) {
+    memcpy(p, E.row[j].chars, E.row[j].size);
+    p += E.row[j].size;
+    *p = '\n';
+    p++;
+  }
+
+  return buf;
+}
 
 void editorOpen(char *filename) {
   free(E.filename);
@@ -253,6 +295,28 @@ void editorOpen(char *filename) {
 
   free(line);
   fclose(fp);
+}
+
+void editorSave() {
+  if (E.filename == NULL)
+    return;
+
+  int len;
+  char *buf = editorRowsToString(&len);
+  int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+  if (fd != -1) {
+    if (ftruncate(fd, len) != -1) {
+      if (write(fd, buf, len) == len) {
+        close(fd);
+        free(buf);
+        editorSetStatusMessage("%d bytes written to disk", len);
+        return;
+      }
+    }
+    close(fd);
+  }
+  free(buf);
+  editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
 
 /*** append buffer ***/
@@ -321,10 +385,15 @@ void editorProcessKey() {
   int c = editorReadKey();
 
   switch (c) {
+  case '\r':
+    break;
   case CTRL_KEY('q'):
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
     exit(0);
+    break;
+  case CTRL_KEY('s'):
+    editorSave();
     break;
   case ARROW_UP:
   case ARROW_DOWN:
@@ -339,6 +408,19 @@ void editorProcessKey() {
       editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
     }
   } break;
+
+  case BACKSPACE:
+  case CTRL_KEY('h'):
+    /* TODO */
+    break;
+
+  case CTRL_KEY('l'):
+  case '\x1b':
+    break;
+
+  default:
+    editorInsertChar(c);
+    break;
   }
 }
 
@@ -496,7 +578,7 @@ int main(int argc, char *argv[]) {
     editorOpen(argv[1]);
   }
 
-  editorSetStatusMessage("HELP: Ctrl-Q = quit");
+  editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
 
   while (1) {
     editorRefreshScreen();
