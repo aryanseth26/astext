@@ -1,2 +1,2 @@
 astext: astext.c
-	$(CC) astext.c -o astext -Wall -Wextra
+	$(CC) astext.c -o build/astext -Wall -Wextra
